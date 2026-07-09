@@ -1,0 +1,34 @@
+[project]
+name = "robot-bipedal-virtual"
+version = "1.0.0"
+description = "Modelo virtual de robot bípedo 12GDL con cinemática Denavit-Hartenberg"
+authors = [
+    { name = "Félix David Henríquez Córdoba" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+robot-biped = "robot_biped.main:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["robot_biped*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
