@@ -23,9 +23,9 @@ import numpy as np
 
 from robot_biped.dh_kinematics import BipedRobot, HOME_LEFT, HOME_RIGHT
 from robot_biped.inverse_kinematics import InverseKinematics
-from robot_biped.arduino_sequences import SequencePlayer, WALK_STEP1, AVAILABLE_SEQUENCES
+from robot_biped.arduino_sequences import SequencePlayer, AVAILABLE_SEQUENCES
 from robot_biped.visualizer import RobotVisualizer
-from robot_biped.serial_interface import ArduinoInterface, print_arduino_firmware
+from robot_biped.serial_interface import ArduinoInterface
 
 
 def print_banner():
@@ -44,13 +44,19 @@ def print_banner():
 
 
 def cmd_simulate_offline(args):
-    """Modo simulación offline con secuencias Arduino."""
-    print("[MODO] Simulación Offline - Secuencias Arduino")
+    """Modo simulación offline con secuencias Arduino IK."""
+    print("[MODO] Simulación Offline - Secuencia IK Arduino")
     print(f"Secuencia: {args.sequence}")
     print(f"Velocidad: {args.speed}x")
 
-    sequence = AVAILABLE_SEQUENCES.get(args.sequence, WALK_STEP1)
-    interval = int(500 / args.speed)  # ms base / speed
+    sequence = AVAILABLE_SEQUENCES.get(args.sequence)
+    if sequence is None:
+        print(f"[ERROR] Secuencia '{args.sequence}' no encontrada.")
+        print(f"Disponibles: {list(AVAILABLE_SEQUENCES.keys())}")
+        return
+
+    base_interval = sequence[0].delay_ms
+    interval = max(10, int(base_interval / args.speed))
 
     viz = RobotVisualizer()
     viz.animate_sequence(sequence, interval_ms=interval)
@@ -136,8 +142,24 @@ def cmd_arduino_live(args):
 
 
 def cmd_firmware(args):
-    """Muestra el código Arduino para subir al Nano."""
-    print_arduino_firmware()
+    """Muestra la ubicación del código Arduino."""
+    import os
+    firmware_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'firmware', 'robot_bipedo_nano', 'robot_bipedo_nano.ino'
+    )
+    print("=" * 60)
+    print("FIRMWARE ARDUINO - Robot Bípedo 12GDL")
+    print("=" * 60)
+    if os.path.exists(firmware_path):
+        print(f"Archivo: {firmware_path}")
+        print()
+        with open(firmware_path, 'r') as f:
+            print(f.read())
+    else:
+        print(f"[ERROR] No se encontró el firmware en: {firmware_path}")
+        print("Debería estar en: firmware/robot_bipedo_nano/robot_bipedo_nano.ino")
+    print("=" * 60)
 
 
 def cmd_test_dh(args):
@@ -267,16 +289,16 @@ Ejemplos:
     # --- Simulación Offline ---
     p_off = subparsers.add_parser('simulate-offline', help='Simulación con secuencias Arduino')
     p_off.add_argument('--sequence', choices=list(AVAILABLE_SEQUENCES.keys()),
-                       default='walk_step1', help='Secuencia a reproducir')
-    p_off.add_argument('--speed', type=float, default=2.0,
-                       help='Velocidad de reproducción (default: 2x)')
+                       default='ik_walk', help='Secuencia a reproducir (default: ik_walk)')
+    p_off.add_argument('--speed', type=float, default=1.0,
+                       help='Velocidad de reproducción (default: 1x)')
 
     # --- Simulación IK ---
     p_ik = subparsers.add_parser('simulate-ik', help='Simulación con cinemática inversa')
     p_ik.add_argument('--step-length', type=float, default=3.0, help='Longitud del paso (cm)')
     p_ik.add_argument('--step-height', type=float, default=1.5, help='Altura del paso (cm)')
-    p_ik.add_argument('--points', type=int, default=30, help='Puntos por ciclo')
-    p_ik.add_argument('--interval', type=int, default=150, help='Intervalo entre frames (ms)')
+    p_ik.add_argument('--points', type=int, default=50, help='Puntos por ciclo')
+    p_ik.add_argument('--interval', type=int, default=80, help='Intervalo entre frames (ms)')
 
     # --- Visualización Estática ---
     p_stat = subparsers.add_parser('static', help='Visualización estática')

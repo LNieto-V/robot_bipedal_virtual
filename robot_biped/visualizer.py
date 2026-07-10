@@ -37,7 +37,7 @@ from typing import List, Optional, Tuple
 import time
 
 from robot_biped.dh_kinematics import BipedRobot, HOME_LEFT, HOME_RIGHT
-from robot_biped.arduino_sequences import SequencePlayer, WALK_STEP1, AVAILABLE_SEQUENCES
+from robot_biped.arduino_sequences import SequencePlayer, AVAILABLE_SEQUENCES
 
 
 class RobotVisualizer:

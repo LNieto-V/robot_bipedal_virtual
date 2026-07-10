@@ -7,8 +7,14 @@ los servomotores SG90 del prototipo físico.
 Protocolo:
     - Puerto: /dev/ttyUSB0 (Linux) o COMx (Windows)
     - Baudrate: 115200
-    - Formato: "A,z1,z2,z3,z4,z5,z6\n"
-    - Respuesta: "OK" o "ERR"
+    - Comandos:
+        "PING\\n"                     → "PONG"
+        "A,z1,z2,z3,z4,z5,z6\\n"     → Mover instantáneo
+        "S,z1,z2,z3,z4,z5,z6,ms\\n"  → Mover con interpolación
+        "W\\n"                        → Iniciar caminata IK autónoma
+        "H\\n"                        → Volver a HOME
+        "X\\n"                        → Detener caminata
+        "R\\n"                        → Reportar ángulos actuales
 """
 
 import serial
@@ -22,6 +28,9 @@ import threading
 class ArduinoInterface:
     """
     Interfaz de comunicación con Arduino Nano.
+
+    Soporta el protocolo completo del firmware robot_bipedo_nano.ino:
+    control instantáneo, interpolado, caminata autónoma y lectura de ángulos.
     """
 
     DEFAULT_BAUDRATE = 115200
@@ -143,7 +152,7 @@ class ArduinoInterface:
 
     def send_angles(self, angles: List[float]) -> bool:
         """
-        Envía ángulos al Arduino.
+        Envía ángulos al Arduino (movimiento instantáneo).
 
         Parámetros:
             angles: [z1, z2, z3, z4, z5, z6] en grados
@@ -169,14 +178,16 @@ class ArduinoInterface:
             self.connected = False
             return False
 
-    def send_sequence_step(self, servo: int, angle: float, delay_ms: int) -> bool:
+    def send_smooth_angles(self, angles: List[float], duration_ms: int = 80) -> bool:
         """
-        Envía un paso de secuencia al Arduino.
+        Envía ángulos al Arduino con interpolación suave.
+
+        El firmware interpola desde la posición actual hacia la objetivo
+        en 'duration_ms' milisegundos, con pasos de ~10ms.
 
         Parámetros:
-            servo: Índice del servo (0-5)
-            angle: Ángulo en grados
-            delay_ms: Espera en ms
+            angles: [z1, z2, z3, z4, z5, z6] en grados
+            duration_ms: Duración de la transición en ms
 
         Retorna:
             True si el envío fue exitoso
@@ -184,11 +195,61 @@ class ArduinoInterface:
         if not self.connected or not self.serial:
             return False
 
-        angle = max(0, min(180, int(angle)))
-        cmd = f"M,{servo},{angle},{delay_ms}\n"
+        clamped = [max(0, min(180, int(a))) for a in angles]
+
+        # Formato: "S,90,90,90,80,90,90,80\n"
+        cmd = f"S,{clamped[0]},{clamped[1]},{clamped[2]}," \
+              f"{clamped[3]},{clamped[4]},{clamped[5]},{duration_ms}\n"
 
         try:
             self.serial.write(cmd.encode('utf-8'))
+            self.serial.flush()
+            return True
+        except serial.SerialException:
+            self.connected = False
+            return False
+
+    def send_walk_command(self) -> bool:
+        """
+        Inicia la caminata autónoma IK en el Arduino.
+
+        El Arduino ejecuta la secuencia de 20 frames IK almacenada
+        en PROGMEM de forma cíclica. Enviar 'X' para detener.
+
+        Retorna:
+            True si el comando fue enviado
+        """
+        if not self.connected or not self.serial:
+            return False
+
+        try:
+            self.serial.write(b"W\n")
+            self.serial.flush()
+            return True
+        except serial.SerialException:
+            self.connected = False
+            return False
+
+    def send_stop_command(self) -> bool:
+        """Detiene la caminata autónoma."""
+        if not self.connected or not self.serial:
+            return False
+
+        try:
+            self.serial.write(b"X\n")
+            self.serial.flush()
+            return True
+        except serial.SerialException:
+            self.connected = False
+            return False
+
+    def send_home_command(self) -> bool:
+        """Envía al Arduino a la posición HOME."""
+        if not self.connected or not self.serial:
+            return False
+
+        try:
+            self.serial.write(b"H\n")
             self.serial.flush()
             return True
         except serial.SerialException:
@@ -246,116 +307,3 @@ class ArduinoInterface:
     def __exit__(self, *args):
         self.disconnect()
 
-
-# ============================================================
-# CÓDIGO ARDUINO COMPLEMENTARIO (para subir al Nano)
-# ============================================================
-ARDUINO_FIRMWARE = '''
-// Firmware para Arduino Nano - Robot Bípedo 12GDL
-// Comunicación serial con PC para control de servomotores
-
-#include <Servo.h>
-
-Servo servos[6];
-const uint8_t PINS[6] = {7, 6, 5, 4, 3, 2};
-
-// Ángulos actuales
-int currentAngles[6] = {90, 90, 90, 80, 90, 90};
-
-// Buffer para lectura serial
-String inputBuffer = "";
-
-void setup() {
-  Serial.begin(115200);
-
-  // Attach servos
-  for (int i = 0; i < 6; i++) {
-    servos[i].attach(PINS[i]);
-    servos[i].write(currentAngles[i]);
-  }
-
-  Serial.println("READY");
-}
-
-void loop() {
-  // Leer comandos seriales
-  while (Serial.available() > 0) {
-    char c = Serial.read();
-
-    if (c == '\\n') {
-      processCommand(inputBuffer);
-      inputBuffer = "";
-    } else {
-      inputBuffer += c;
-    }
-  }
-}
-
-void processCommand(String cmd) {
-  cmd.trim();
-
-  if (cmd == "PING") {
-    Serial.println("PONG");
-    return;
-  }
-
-  if (cmd == "R") {
-    // Report current angles
-    Serial.print(currentAngles[0]);
-    for (int i = 1; i < 6; i++) {
-      Serial.print(",");
-      Serial.print(currentAngles[i]);
-    }
-    Serial.println();
-    return;
-  }
-
-  // Format: A,z1,z2,z3,z4,z5,z6
-  if (cmd.startsWith("A,")) {
-    int idx = 2;
-    for (int i = 0; i < 6; i++) {
-      int nextComma = cmd.indexOf(',', idx);
-      String val = (nextComma == -1) ? cmd.substring(idx) : cmd.substring(idx, nextComma);
-      int angle = val.toInt();
-      angle = constrain(angle, 0, 180);
-      currentAngles[i] = angle;
-      servos[i].write(angle);
-      idx = nextComma + 1;
-    }
-    Serial.println("OK");
-    return;
-  }
-
-  // Format: M,servo,angle,delay
-  if (cmd.startsWith("M,")) {
-    int comma1 = cmd.indexOf(',', 2);
-    int comma2 = cmd.indexOf(',', comma1 + 1);
-
-    int servoIdx = cmd.substring(2, comma1).toInt();
-    int angle = cmd.substring(comma1 + 1, comma2).toInt();
-    int delayMs = cmd.substring(comma2 + 1).toInt();
-
-    if (servoIdx >= 0 && servoIdx < 6) {
-      angle = constrain(angle, 0, 180);
-      currentAngles[servoIdx] = angle;
-      servos[servoIdx].write(angle);
-      delay(delayMs);
-      Serial.println("OK");
-    } else {
-      Serial.println("ERR");
-    }
-    return;
-  }
-
-  Serial.println("ERR");
-}
-'''
-
-
-def print_arduino_firmware():
-    """Imprime el código Arduino para copiar y subir al Nano."""
-    print("=" * 60)
-    print("CÓDIGO ARDUINO - Copiar y subir al Nano")
-    print("=" * 60)
-    print(ARDUINO_FIRMWARE)
-    print("=" * 60)

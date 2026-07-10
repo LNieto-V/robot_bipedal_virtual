@@ -1,8 +1,9 @@
 """
 Secuencias de Movimiento del Arduino
 =====================================
-Traducción de las secuencias del código Arduino a Python para
-reproducirlas en la simulación.
+Secuencias de caminata generadas por cinemática inversa (IK)
+para el robot bípedo 12GDL. Cada frame contiene los 6 ángulos
+de servo sincronizados, produciendo movimiento coordinado.
 
 Mapeo de servos:
     z1=0  Tobillo D7  (índice 0)
@@ -14,59 +15,131 @@ Mapeo de servos:
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import numpy as np
 
 
 @dataclass
-class Movement:
-    """Un movimiento de un servo."""
-    servo: int      # Índice del servo (0-5)
-    angle: float    # Ángulo en grados
-    delay_ms: int   # Espera en ms
+class WalkState:
+    """Estado completo de los 6 servos en un instante.
+
+    Usado para secuencias IK donde todos los servos se mueven
+    simultáneamente de forma coordinada.
+    """
+    angles: List[float]    # [z1, z2, z3, z4, z5, z6]
+    delay_ms: int = 80     # Duración del frame en ms
+
 
 
 # ============================================================
-# SECUENCIAS DEL CÓDIGO ARDUINO
+# GENERACIÓN DE SECUENCIAS IK
 # ============================================================
 
-HOME_POSITION: List[Movement] = [
-    Movement(0, 90, 500),
-    Movement(1, 90, 500),
-    Movement(2, 90, 500),
-    Movement(3, 80, 500),
-    Movement(4, 90, 500),
-    Movement(5, 90, 500),
-]
+def generate_ik_walk_states(
+    step_length: float = 3.0,
+    step_height: float = 1.5,
+    n_points: int = 40,
+    frame_delay_ms: int = 80
+) -> List[WalkState]:
+    """
+    Genera una secuencia de caminata completa usando cinemática inversa.
 
-WALK_STEP1: List[Movement] = [
-    Movement(3, 60, 500),
-    Movement(4, 100, 500),
-    Movement(5, 70, 500),
-    Movement(3, 80, 500),
-    Movement(0, 60, 500),
-    Movement(1, 100, 100),
-    Movement(3, 90, 100),
-    Movement(2, 100, 500),
-    Movement(1, 90, 500),
-    Movement(2, 110, 500),
-    Movement(1, 80, 500),
-    Movement(2, 120, 500),
-    Movement(0, 70, 500),
-    Movement(3, 80, 500),
-    Movement(5, 70, 500),
-    Movement(0, 80, 500),
-    Movement(3, 70, 500),
-    Movement(3, 60, 500),
-    Movement(0, 90, 500),
-    Movement(2, 100, 500),
-    Movement(1, 90, 500),
-]
+    Retorna una lista de WalkState donde cada estado tiene los 6 ángulos
+    de servo sincronizados, produciendo un movimiento coordinado y suave
+    idéntico al de ``simulate-ik``.
+
+    Parámetros:
+        step_length: Longitud del paso en cm
+        step_height: Altura del paso en cm
+        n_points: Número de frames por ciclo
+        frame_delay_ms: Duración de cada frame en ms
+
+    Retorna:
+        Lista de WalkState con ángulos [z1, z2, z3, z4, z5, z6]
+    """
+    from robot_biped.inverse_kinematics import InverseKinematics
+
+    ik = InverseKinematics()
+    walk = ik.generate_walk_cycle(step_length, step_height, n_points)
+
+    states = []
+    # HOME en formato IK: (cadera, rodilla, tobillo)
+    last_la = (90.0, 90.0, 90.0)
+    last_ra = (90.0, 90.0, 80.0)
+
+    for (lx, ly, lz), (rx, ry, rz) in zip(walk['left'], walk['right']):
+        la = ik.solve(lx, ly, lz, "left", reference=last_la)
+        ra = ik.solve(rx, ry, rz, "right", reference=last_ra)
+
+        if la is None:
+            la = last_la
+        else:
+            last_la = la
+
+        if ra is None:
+            ra = last_ra
+        else:
+            last_ra = ra
+
+        # IK retorna (cadera, rodilla, tobillo)
+        # Arduino espera [z1, z2, z3, z4, z5, z6]
+        #              = [tob_L, rod_L, cad_L, tob_R, rod_R, cad_R]
+        angles = [
+            la[2], la[1], la[0],   # Pierna izquierda: tobillo, rodilla, cadera
+            ra[2], ra[1], ra[0],   # Pierna derecha: tobillo, rodilla, cadera
+        ]
+
+        states.append(WalkState(angles=angles, delay_ms=frame_delay_ms))
+
+    return states
+
+
+def interpolate_states(
+    states: List[WalkState],
+    interp_factor: int = 3
+) -> List[WalkState]:
+    """
+    Interpola entre estados para suavizar transiciones.
+
+    Genera 'interp_factor' frames intermedios entre cada par de estados
+    originales usando interpolación lineal.
+
+    Parámetros:
+        states: Lista de WalkState originales
+        interp_factor: Número de frames intermedios entre cada par
+
+    Retorna:
+        Lista de WalkState con frames interpolados
+    """
+    if len(states) < 2 or interp_factor < 1:
+        return states
+
+    result = []
+
+    for i in range(len(states)):
+        j = (i + 1) % len(states)
+        a = np.array(states[i].angles)
+        b = np.array(states[j].angles)
+
+        # Dividir la duración del frame entre los sub-frames
+        sub_delay = max(1, states[i].delay_ms // (interp_factor + 1))
+
+        for k in range(interp_factor + 1):
+            t = k / (interp_factor + 1)
+            interp = a + (b - a) * t
+            result.append(WalkState(
+                angles=interp.tolist(),
+                delay_ms=sub_delay
+            ))
+
+    return result
 
 
 class SequencePlayer:
     """
     Reproductor de secuencias de movimiento del Arduino.
+    Soporta tanto secuencias de un solo servo (Movement) como
+    secuencias coordinadas (WalkState).
     """
 
     # Mapeo de índices de servo a nombres
@@ -107,41 +180,31 @@ class SequencePlayer:
             [self.current_angles[3], self.current_angles[4], self.current_angles[5]],
         )
 
-    def execute_step(self, sequence: List[Movement]) -> np.ndarray:
+    def execute_step(self, sequence: List[WalkState]) -> np.ndarray:
         """
         Ejecuta un paso de la secuencia y retorna los ángulos actualizados.
-
-        Parámetros:
-            sequence: Lista de movimientos
-
-        Retorna:
-            Array de ángulos [z1..z6] actualizados
         """
         if self.step_index >= len(sequence):
             self.step_index = 0  # Loop
 
-        mov = sequence[self.step_index]
-        self.current_angles[mov.servo] = mov.angle
-        self.step_index += 1
+        state = sequence[self.step_index]
+        for i in range(min(6, len(state.angles))):
+            self.current_angles[i] = state.angles[i]
 
+        self.step_index += 1
         return np.array(self.current_angles)
 
-    def execute_full_sequence(self, sequence: List[Movement]) -> List[np.ndarray]:
+    def execute_full_sequence(self, sequence: List[WalkState]) -> List[np.ndarray]:
         """
         Ejecuta una secuencia completa y retorna todos los estados.
-
-        Parámetros:
-            sequence: Lista de movimientos
-
-        Retorna:
-            Lista de arrays de ángulos para cada paso
         """
         states = []
         self.reset_to_home()
 
-        for mov in sequence:
-            self.current_angles[mov.servo] = mov.angle
-            states.append(np.array(self.current_angles))
+        for state in sequence:
+            for i in range(min(6, len(state.angles))):
+                self.current_angles[i] = state.angles[i]
+            states.append(np.array(self.current_angles.copy()))
 
         return states
 
@@ -171,8 +234,20 @@ class SequencePlayer:
         return {k: np.array(v) for k, v in data.items()}
 
 
+# ============================================================
+# SECUENCIAS PRECALCULADAS
+# ============================================================
+
+# Generar secuencia IK al cargar el módulo
+_IK_WALK_STATES = generate_ik_walk_states(
+    step_length=3.0, step_height=1.5, n_points=40, frame_delay_ms=80
+)
+
+# Versión interpolada para animación ultra-suave
+IK_WALK_SMOOTH = interpolate_states(_IK_WALK_STATES, interp_factor=2)
+
 # Secuencias disponibles
 AVAILABLE_SEQUENCES = {
-    'home': HOME_POSITION,
-    'walk_step1': WALK_STEP1,
+    'ik_walk': IK_WALK_SMOOTH,
 }
+
