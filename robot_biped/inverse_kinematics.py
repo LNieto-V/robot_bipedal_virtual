@@ -166,11 +166,10 @@ class InverseKinematics:
         if not solutions:
             return None
 
-        # --- Restricción biomecánica: rodilla solo flexiona hacia adelante ---
-        # servo_rodilla >= 90° implica θ2_DH >= 0° (pantorrilla adelante del muslo).
-        # Filtrar soluciones donde la rodilla se dobla hacia atrás.
-        natural = [s for s in solutions if s[1] >= 90.0]
-        candidates = natural if natural else solutions
+        # Usar todas las soluciones válidas (dentro del rango 0°-180°).
+        # La selección por referencia (abajo) elige la más cercana al frame
+        # anterior, manteniendo continuidad sin forzar dirección de rodilla.
+        candidates = solutions
 
         # Elegir la solución más cercana a la referencia (frame anterior)
         # para mantener continuidad y evitar saltos entre ramas de solución.
@@ -202,20 +201,34 @@ class InverseKinematics:
         step_length: float = 3.0,
         step_height: float = 1.5,
         n_points: int = 40,
-        leg_height: float = 11.5
+        leg_height: float = 11.5,
+        lateral_shift: float = 1.0
     ) -> dict:
         """
-        Genera una trayectoria de paso natural para ambas piernas.
+        Genera una trayectoria de paso natural para ambas piernas,
+        con inclinación perpendicular del pie para transferencia de peso.
 
         El ciclo de marcha se divide en fase de balanceo (swing, 40%)
         y fase de apoyo (stance, 60%), con interpolación cosenoidal
         para suavizar aceleraciones y transiciones.
+
+        El pie (tobillo, θ3) es la articulación que se mueve
+        perpendicularmente (lateral, eje Y). Las demás articulaciones
+        (cadera θ1, rodilla θ2) se mueven al frente (plano sagital X-Z).
+
+        Ecuación perpendicular: Y = L3·sin(θ3)
+        Durante la fase de apoyo (stance), el pie se inclina lateralmente
+        para desplazar el centro de gravedad sobre la pierna de soporte,
+        permitiendo que la otra pierna se levante de forma estable.
 
         Parámetros:
             step_length: Longitud del paso en cm
             step_height: Altura máxima del pie sobre el suelo en cm
             n_points: Número total de puntos por ciclo
             leg_height: Longitud total de la pierna extendida (cm)
+            lateral_shift: Desplazamiento lateral máximo del pie en cm.
+                          Controla cuánto se inclina perpendicularmente
+                          el pie durante apoyo (default: 1.0 cm ≈ 20° tobillo)
 
         Retorna:
             dict con waypoints para pierna izquierda y derecha
@@ -237,10 +250,11 @@ class InverseKinematics:
         # Z: arco sobre el suelo (la pierna se levanta y vuelve a bajar)
         swing_z = ground_z - step_height * np.sin(t_swing)
 
-        # Y: ligero desplazamiento lateral (rol natural del tobillo)
+        # Y (perpendicular): durante el swing el pie está en el aire,
+        # ligero movimiento lateral natural al avanzar
         swing_y = 0.3 * np.sin(t_swing)
 
-        # === FASE DE APOYO (stance): pie fijo, cuerpo avanza ===
+        # === FASE DE APOYO (stance): pie en el suelo, cuerpo avanza ===
         # Interpolación cosenoidal para suavizar inicio/final
         t_stance_angle = np.linspace(0, np.pi, n_stance)
         t_stance = (1 - np.cos(t_stance_angle)) / 2  # easing [0→1]
@@ -252,8 +266,13 @@ class InverseKinematics:
         # simulando el efecto péndulo invertido de la marcha humana)
         stance_z = ground_z + 0.2 * np.sin(t_stance_angle)
 
-        # Y: sin desplazamiento lateral durante apoyo
-        stance_y = np.zeros_like(stance_x)
+        # Y (perpendicular): inclinación lateral del pie durante apoyo.
+        # El pie se inclina perpendicularmente para transferir el peso
+        # del robot sobre esta pierna, permitiendo que la otra se levante.
+        # Perfil sinusoidal: se inclina al inicio del apoyo (cuando la otra
+        # pierna comienza a levantarse), máximo a mitad de stance, y
+        # vuelve a neutral al final (cuando la otra pierna aterriza).
+        stance_y = lateral_shift * np.sin(t_stance_angle)
 
         # Combinar fases
         traj_x = np.concatenate([swing_x, stance_x])

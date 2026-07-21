@@ -1,9 +1,12 @@
 """
 Secuencias de Movimiento del Arduino
 =====================================
-Secuencias de caminata generadas por cinemática inversa (IK)
-para el robot bípedo 12GDL. Cada frame contiene los 6 ángulos
-de servo sincronizados, produciendo movimiento coordinado.
+Traducción de las secuencias del código Arduino a Python para
+reproducirlas en la simulación.
+
+Soporta dos tipos de secuencias:
+  - Movement: un solo servo por paso (original del Arduino)
+  - WalkState: 6 servos simultáneos (generado por IK)
 
 Mapeo de servos:
     z1=0  Tobillo D7  (índice 0)
@@ -15,8 +18,16 @@ Mapeo de servos:
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 import numpy as np
+
+
+@dataclass
+class Movement:
+    """Un movimiento de un servo (secuencia original del Arduino)."""
+    servo: int      # Índice del servo (0-5)
+    angle: float    # Ángulo en grados
+    delay_ms: int   # Espera en ms
 
 
 @dataclass
@@ -30,16 +41,119 @@ class WalkState:
     delay_ms: int = 80     # Duración del frame en ms
 
 
+# ============================================================
+# SECUENCIAS ORIGINALES DEL CÓDIGO ARDUINO (primer commit)
+# ============================================================
+
+HOME_POSITION: List[Movement] = [
+    Movement(0, 90, 500),
+    Movement(1, 90, 500),
+    Movement(2, 90, 500),
+    Movement(3, 80, 500),
+    Movement(4, 90, 500),
+    Movement(5, 90, 500),
+]
+
+# Secuencia de caminata original del Arduino — un servo a la vez.
+# Produce un movimiento más natural para este modelo de robot bípedo
+# porque cada articulación se mueve de forma independiente y secuencial.
+WALK_STEP1: List[Movement] = [
+    Movement(3, 60, 500),
+    Movement(4, 100, 500),
+    Movement(5, 70, 500),
+    Movement(3, 80, 500),
+    Movement(0, 60, 500),
+    Movement(1, 100, 100),
+    Movement(3, 90, 100),
+    Movement(2, 100, 500),
+    Movement(1, 90, 500),
+    Movement(2, 110, 500),
+    Movement(1, 80, 500),
+    Movement(2, 120, 500),
+    Movement(0, 70, 500),
+    Movement(3, 80, 500),
+    Movement(5, 70, 500),
+    Movement(0, 80, 500),
+    Movement(3, 70, 500),
+    Movement(3, 60, 500),
+    Movement(0, 90, 500),
+    Movement(2, 100, 500),
+    Movement(1, 90, 500),
+]
 
 # ============================================================
-# GENERACIÓN DE SECUENCIAS IK
+# SECUENCIA NATURAL CON INCLINACIÓN PERPENDICULAR DE PIES
+# ============================================================
+# Basada en WALK_STEP1 pero con pasos de inclinación lateral
+# intercalados. Antes de levantar una pierna, el tobillo de la
+# pierna de apoyo inclina al robot perpendicularmente (lateralmente)
+# para transferir el peso, como hace un bípedo real.
+#
+# El tobillo z1 (izq, home=90°) y z4 (der, home=80°) controlan
+# la inclinación lateral del pie:
+#   - z1 < 90° → pie izq inclina el cuerpo hacia la DERECHA
+#   - z4 > 80° → pie der inclina el cuerpo hacia la IZQUIERDA
+#
+# Secuencia:
+#   1. Inclinar pie derecho → transferir peso a pierna derecha
+#   2. Ejecutar paso con pierna izquierda (WALK_STEP1 parcial)
+#   3. Centrar ambos pies
+#   4. Inclinar pie izquierdo → transferir peso a pierna izquierda
+#   5. Ejecutar paso con pierna derecha
+#   6. Centrar ambos pies
+
+WALK_NATURAL: List[Movement] = [
+    # --- FASE 1: Transferir peso a pierna DERECHA ---
+    # Inclinar tobillo derecho para desplazar el centro de gravedad
+    Movement(3, 70, 300),   # z4: tobillo der sube (inclina cuerpo a la izq)
+    Movement(0, 80, 300),   # z1: tobillo izq baja (ayuda a inclinar)
+
+    # --- FASE 2: Paso con pierna IZQUIERDA (pierna derecha soporta) ---
+    # La pierna izquierda está descargada y puede moverse libremente
+    Movement(3, 60, 500),   # z4: tobillo der flexiona más (peso firme)
+    Movement(4, 100, 500),  # z5: rodilla der flexiona
+    Movement(5, 70, 500),   # z6: cadera der avanza
+    Movement(3, 80, 500),   # z4: tobillo der regresa
+    Movement(0, 60, 500),   # z1: tobillo izq flexiona (levanta pie)
+    Movement(1, 100, 100),  # z2: rodilla izq flexiona
+    Movement(3, 90, 100),   # z4: tobillo der ajusta
+    Movement(2, 100, 500),  # z3: cadera izq avanza
+    Movement(1, 90, 500),   # z2: rodilla izq extiende
+    Movement(2, 110, 500),  # z3: cadera izq avanza más
+
+    # --- FASE 3: Transferir peso a pierna IZQUIERDA ---
+    # Centrar y luego inclinar para transferir peso
+    Movement(0, 100, 300),  # z1: tobillo izq inclina cuerpo a la derecha
+    Movement(3, 90, 300),   # z4: tobillo der sube (ayuda a inclinar)
+
+    # --- FASE 4: Paso con pierna DERECHA (pierna izquierda soporta) ---
+    Movement(1, 80, 500),   # z2: rodilla izq flexiona (paso der)
+    Movement(2, 120, 500),  # z3: cadera izq avanza más
+    Movement(0, 70, 500),   # z1: tobillo izq ajusta
+    Movement(3, 80, 500),   # z4: tobillo der flexiona
+    Movement(5, 70, 500),   # z6: cadera der avanza
+    Movement(0, 80, 500),   # z1: tobillo izq ajusta
+    Movement(3, 70, 500),   # z4: tobillo der flexiona más
+    Movement(3, 60, 500),   # z4: tobillo der flexiona máximo
+
+    # --- FASE 5: Centrar y preparar siguiente ciclo ---
+    Movement(0, 90, 300),   # z1: tobillo izq a home
+    Movement(3, 80, 300),   # z4: tobillo der a home
+    Movement(2, 100, 500),  # z3: cadera izq retrocede
+    Movement(1, 90, 500),   # z2: rodilla izq extiende
+]
+
+
+# ============================================================
+# GENERACIÓN DE SECUENCIAS IK (alternativa)
 # ============================================================
 
 def generate_ik_walk_states(
     step_length: float = 3.0,
     step_height: float = 1.5,
     n_points: int = 40,
-    frame_delay_ms: int = 80
+    frame_delay_ms: int = 80,
+    lateral_shift: float = 1.0
 ) -> List[WalkState]:
     """
     Genera una secuencia de caminata completa usando cinemática inversa.
@@ -53,6 +167,7 @@ def generate_ik_walk_states(
         step_height: Altura del paso en cm
         n_points: Número de frames por ciclo
         frame_delay_ms: Duración de cada frame en ms
+        lateral_shift: Inclinación perpendicular del pie en cm (default: 1.0)
 
     Retorna:
         Lista de WalkState con ángulos [z1, z2, z3, z4, z5, z6]
@@ -60,7 +175,8 @@ def generate_ik_walk_states(
     from robot_biped.inverse_kinematics import InverseKinematics
 
     ik = InverseKinematics()
-    walk = ik.generate_walk_cycle(step_length, step_height, n_points)
+    walk = ik.generate_walk_cycle(step_length, step_height, n_points,
+                                  lateral_shift=lateral_shift)
 
     states = []
     # HOME en formato IK: (cadera, rodilla, tobillo)
@@ -180,30 +296,53 @@ class SequencePlayer:
             [self.current_angles[3], self.current_angles[4], self.current_angles[5]],
         )
 
-    def execute_step(self, sequence: List[WalkState]) -> np.ndarray:
+    def execute_step(self, sequence: List[Union[Movement, WalkState]]) -> np.ndarray:
         """
         Ejecuta un paso de la secuencia y retorna los ángulos actualizados.
+
+        Detecta automáticamente si es Movement (un servo) o WalkState (6 servos).
+
+        Parámetros:
+            sequence: Lista de Movement o WalkState
+
+        Retorna:
+            Array de ángulos [z1..z6] actualizados
         """
         if self.step_index >= len(sequence):
             self.step_index = 0  # Loop
 
-        state = sequence[self.step_index]
-        for i in range(min(6, len(state.angles))):
-            self.current_angles[i] = state.angles[i]
+        step = sequence[self.step_index]
+
+        if isinstance(step, Movement):
+            # Secuencia original: un servo a la vez
+            self.current_angles[step.servo] = step.angle
+        elif isinstance(step, WalkState):
+            # Secuencia IK: todos los servos simultáneamente
+            for i in range(min(6, len(step.angles))):
+                self.current_angles[i] = step.angles[i]
 
         self.step_index += 1
         return np.array(self.current_angles)
 
-    def execute_full_sequence(self, sequence: List[WalkState]) -> List[np.ndarray]:
+    def execute_full_sequence(self, sequence: List[Union[Movement, WalkState]]) -> List[np.ndarray]:
         """
         Ejecuta una secuencia completa y retorna todos los estados.
+
+        Parámetros:
+            sequence: Lista de Movement o WalkState
+
+        Retorna:
+            Lista de arrays de ángulos para cada paso
         """
         states = []
         self.reset_to_home()
 
-        for state in sequence:
-            for i in range(min(6, len(state.angles))):
-                self.current_angles[i] = state.angles[i]
+        for step in sequence:
+            if isinstance(step, Movement):
+                self.current_angles[step.servo] = step.angle
+            elif isinstance(step, WalkState):
+                for i in range(min(6, len(step.angles))):
+                    self.current_angles[i] = step.angles[i]
             states.append(np.array(self.current_angles.copy()))
 
         return states
@@ -248,6 +387,8 @@ IK_WALK_SMOOTH = interpolate_states(_IK_WALK_STATES, interp_factor=2)
 
 # Secuencias disponibles
 AVAILABLE_SEQUENCES = {
-    'ik_walk': IK_WALK_SMOOTH,
+    'walk_natural': WALK_NATURAL,       # Original + inclinación lateral (default)
+    'walk_original': WALK_STEP1,        # Original puro del Arduino
+    'ik_walk': IK_WALK_SMOOTH,          # Caminata IK (alternativa)
+    'home': HOME_POSITION,              # Posición home
 }
-

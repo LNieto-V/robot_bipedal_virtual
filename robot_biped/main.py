@@ -44,8 +44,8 @@ def print_banner():
 
 
 def cmd_simulate_offline(args):
-    """Modo simulación offline con secuencias Arduino IK."""
-    print("[MODO] Simulación Offline - Secuencia IK Arduino")
+    """Modo simulación offline con secuencias Arduino."""
+    print("[MODO] Simulación Offline - Secuencia Arduino")
     print(f"Secuencia: {args.sequence}")
     print(f"Velocidad: {args.speed}x")
 
@@ -55,7 +55,11 @@ def cmd_simulate_offline(args):
         print(f"Disponibles: {list(AVAILABLE_SEQUENCES.keys())}")
         return
 
-    base_interval = sequence[0].delay_ms
+    # Obtener intervalo base del primer elemento de la secuencia
+    if sequence and hasattr(sequence[0], 'delay_ms'):
+        base_interval = sequence[0].delay_ms
+    else:
+        base_interval = 100
     interval = max(10, int(base_interval / args.speed))
 
     viz = RobotVisualizer()
@@ -67,13 +71,15 @@ def cmd_simulate_ik(args):
     print("[MODO] Simulación con Cinemática Inversa")
     print(f"Longitud de paso: {args.step_length} cm")
     print(f"Altura de paso: {args.step_height} cm")
+    print(f"Inclinación lateral (perpendicular): {args.lateral_shift} cm")
 
     viz = RobotVisualizer()
     viz.animate_ik_walk(
         step_length=args.step_length,
         step_height=args.step_height,
         n_points=args.points,
-        interval_ms=args.interval
+        interval_ms=args.interval,
+        lateral_shift=args.lateral_shift
     )
 
 
@@ -289,7 +295,7 @@ Ejemplos:
     # --- Simulación Offline ---
     p_off = subparsers.add_parser('simulate-offline', help='Simulación con secuencias Arduino')
     p_off.add_argument('--sequence', choices=list(AVAILABLE_SEQUENCES.keys()),
-                       default='ik_walk', help='Secuencia a reproducir (default: ik_walk)')
+                       default='walk_natural', help='Secuencia a reproducir (default: walk_natural)')
     p_off.add_argument('--speed', type=float, default=1.0,
                        help='Velocidad de reproducción (default: 1x)')
 
@@ -299,6 +305,8 @@ Ejemplos:
     p_ik.add_argument('--step-height', type=float, default=1.5, help='Altura del paso (cm)')
     p_ik.add_argument('--points', type=int, default=50, help='Puntos por ciclo')
     p_ik.add_argument('--interval', type=int, default=80, help='Intervalo entre frames (ms)')
+    p_ik.add_argument('--lateral-shift', type=float, default=1.0,
+                       help='Inclinación perpendicular del pie en cm (default: 1.0)')
 
     # --- Visualización Estática ---
     p_stat = subparsers.add_parser('static', help='Visualización estática')

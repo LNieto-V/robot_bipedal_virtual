@@ -284,20 +284,30 @@ class RobotVisualizer:
     def animate_sequence(
         self,
         sequence: List,
-        interval_ms: int = 100,
+        interval_ms: int = None,
         loop: bool = True
     ):
         """
         Anima una secuencia de movimiento del Arduino.
 
+        Soporta tanto secuencias de Movement (un servo por paso) como
+        de WalkState (6 servos simultáneos).
+
         Parámetros:
-            sequence: Lista de movimientos (clase Movement)
-            interval_ms: Intervalo entre frames en ms
+            sequence: Lista de Movement o WalkState
+            interval_ms: Intervalo entre frames en ms (auto-detecta si None)
             loop: Si True, repite la animación
         """
         self.player.reset_to_home()
         self.trajectory_left = []
         self.trajectory_right = []
+
+        # Auto-detectar intervalo desde el primer elemento de la secuencia
+        if interval_ms is None:
+            if sequence and hasattr(sequence[0], 'delay_ms'):
+                interval_ms = sequence[0].delay_ms
+            else:
+                interval_ms = 100
 
         n_frames = len(sequence)
 
@@ -329,7 +339,8 @@ class RobotVisualizer:
         step_length: float = 3.0,
         step_height: float = 1.5,
         n_points: int = 50,
-        interval_ms: int = 80
+        interval_ms: int = 80,
+        lateral_shift: float = 1.0
     ):
         """
         Anima una caminata generada por cinemática inversa.
@@ -339,11 +350,13 @@ class RobotVisualizer:
             step_height: Altura del paso en cm
             n_points: Puntos por ciclo
             interval_ms: Intervalo entre frames
+            lateral_shift: Inclinación perpendicular del pie en cm
         """
         from robot_biped.inverse_kinematics import InverseKinematics
 
         ik = InverseKinematics()
-        walk = ik.generate_walk_cycle(step_length, step_height, n_points)
+        walk = ik.generate_walk_cycle(step_length, step_height, n_points,
+                                      lateral_shift=lateral_shift)
 
         # Resolver IK para ambas piernas
         left_angles_list = []
